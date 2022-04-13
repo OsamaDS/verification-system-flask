@@ -1,185 +1,143 @@
-import numpy as np
-import sys, os
-from fastapi import FastAPI, UploadFile, File
-from starlette.requests import Request
 import io
+import json                    
+import base64                  
+import logging             
+import numpy as np
+import os
+from PIL import Image
+from engine import OCR
+import numpy as np
 import cv2
-import pytesseract
-import re
-import uvicorn
-from pydantic import BaseModel
-import imutils
-from imutils.contours import sort_contours
-import re
+from flask import Flask, request, jsonify, abort
+from flask_cors import CORS, cross_origin
 
+app = Flask(__name__)          
+app.logger.setLevel(logging.DEBUG)
 
-def License_read_img(img):
- vert = []
- text = []
- pytesseract.pytesseract.tesseract_cmd = '/app/.apt/usr/bin/tesseract'
- img_copy = img.copy()
- img_copy = cv2.cvtColor(img_copy, cv2.COLOR_BGR2GRAY)
- img_copy = cv2.GaussianBlur(img_copy, (5, 5), 0)
- img_canny = cv2.Canny(img_copy, 50, 200, apertureSize=3)
- contours, hierarchy = cv2.findContours(img_canny.copy(), mode=cv2.RETR_TREE, method=cv2.CHAIN_APPROX_NONE)
- for cnt in contours:
-  (x, y, w, h) = cv2.boundingRect(cnt)
-  if w > 50 and h > 50 and h < 300 and w < 400:
-   vert.append([x, y, w, h])
+CORS(app)
 
- for v in vert:
-   x, y, w, h = v
-   cropped_img = img_copy[y:y + h, x:x + w]
-   ret, thresh = cv2.threshold(cropped_img, 127, 255, cv2.THRESH_OTSU)
-   #print(ret)
-   text.append(pytesseract.image_to_string(thresh, lang='eng'))
+ocr = OCR()
+  
+@app.route("/License_predict", methods=['POST'])
+@cross_origin()
+def License_prediction():         
+    # print(request.json)      
+    if not request.json or 'image' not in request.json: 
+        abort(400)
+             
+    # get the base64 encoded string
+    im_b64 = request.json['image']
 
- for i, t in enumerate(text):
-  res = t.replace('\n', '\n').replace('@', '0')
-  res = res.lstrip()
-  # print(res)
-  text[i] = res
- text = [x.rstrip() for i, x in enumerate(text) if x not in text[:i] if x]
+    # convert it into bytes  
+    img_bytes = base64.b64decode(im_b64.encode('utf-8'))
 
- img_copy = img.copy()
- col_slice = int(np.round(img_copy.shape[1] * .35))
- img_copy = img_copy[:col_slice]
- img_copy = cv2.cvtColor(img_copy, cv2.COLOR_BGR2GRAY)
- img_copy = cv2.GaussianBlur(img_copy, (5, 5), 0)
- name_and_address = pytesseract.image_to_string(img_copy, lang='eng')
- name_and_address = name_and_address.split('\n')
- name_and_address = [x.strip() for x in name_and_address]
- name_and_address = [x for x in name_and_address if x]
- #name_and_address
-   #print(text)
+    # convert bytes data to PIL Image object
+    img = Image.open(io.BytesIO(img_bytes))
 
- return name_and_address, text
+    # PIL image object to numpy array
+    frame = np.asarray(img)      
+    #print('img shape', frame.shape)
 
-def ID_read_img(img):
- pytesseract.pytesseract.tesseract_cmd = '/app/.apt/usr/bin/tesseract'
- y_limit = []
- text = []
- previous_ind = 0
- img_copy = img.copy()
- img_copy = cv2.cvtColor(img_copy, cv2.COLOR_BGR2GRAY)
- img_copy = cv2.GaussianBlur(img_copy, (5, 5), 0)
- img_canny = cv2.Canny(img_copy, 50, 200, apertureSize=3)
- contours, hierarchy = cv2.findContours(img_canny.copy(), mode=cv2.RETR_TREE, method=cv2.CHAIN_APPROX_SIMPLE)
+    # process your img_arr here    
+    name_address, text = ocr.License_read_img(frame)
+    # access other keys of json
+    # print(request.json['other_key'])
+    #print(text)
 
- for cnt in contours:
-  (x, y, w, h) = cv2.boundingRect(cnt)
-  if w > 500:
-   y_limit.append(y)
+    result_dict = {'Body output': text, 'name_address': name_address}
+    return jsonify(result_dict)
+  
+@app.route("/ID_predict", methods=['POST'])
+@cross_origin()
+def ID_prediction():         
+    # print(request.json)      
+    if not request.json or 'image' not in request.json: 
+        abort(400)
+             
+    # get the base64 encoded string
+    im_b64 = request.json['image']
 
- y_limit = sorted(y_limit)
- y_limit = [x for i, x in enumerate(y_limit) if x not in y_limit[:i]]
- cropped_img = img.copy()
+    # convert it into bytes  
+    img_bytes = base64.b64decode(im_b64.encode('utf-8'))
 
- for i, y in enumerate(y_limit):
-  if previous_ind == 0:
-   temp = cropped_img[:y + 8, :]
-   temp = cv2.cvtColor(temp, cv2.COLOR_BGR2GRAY)
-   temp = cv2.GaussianBlur(temp, (5, 5), 0)
-   res = pytesseract.image_to_string(temp, lang='eng')
-   text.append(res)
-  else:
-   temp = cropped_img[previous_ind:y + 8, :]
-   temp = cv2.cvtColor(temp, cv2.COLOR_BGR2GRAY)
-   temp = cv2.GaussianBlur(temp, (5, 5), 0)
-   res = pytesseract.image_to_string(temp, lang='eng')
-   text.append(res)
-  previous_ind = y
+    # convert bytes data to PIL Image object
+    img = Image.open(io.BytesIO(img_bytes))
 
- return text
+    # PIL image object to numpy array
+    frame = np.asarray(img)      
+    #print('img shape', frame.shape)
 
-def passport_read_img(img):
- # load the input image, convert it to grayscale, and grab its
- # dimensions
- image = img.copy()
- gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
- (H, W) = gray.shape
- # initialize a rectangular and square structuring kernel
- rectKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (25, 7))
- sqKernel = cv2.getStructuringElement(cv2.MORPH_RECT, (21, 21))
- # smooth the image using a 3x3 Gaussian blur and then apply a
- # blackhat morpholigical operator to find dark regions on a light
- # background
- gray = cv2.GaussianBlur(gray, (3, 3), 0)
- blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, rectKernel)
- grad = cv2.Sobel(blackhat, ddepth=cv2.CV_32F, dx=1, dy=0, ksize=-1)
- grad = np.absolute(grad)
- (minVal, maxVal) = (np.min(grad), np.max(grad))
- grad = (grad - minVal) / (maxVal - minVal)
- grad = (grad * 255).astype("uint8")
- grad = cv2.morphologyEx(grad, cv2.MORPH_CLOSE, rectKernel)
- thresh = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)[1]
- thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, sqKernel)
- thresh = cv2.erode(thresh, None, iterations=2)
- cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
- cnts = imutils.grab_contours(cnts)
- cnts = sort_contours(cnts, method="bottom-to-top")[0]
- mrzBox = None
- for c in cnts:
-  (x, y, w, h) = cv2.boundingRect(c)
-  percentWidth = w / float(W)
-  percentHeight = h / float(H)
-  if percentWidth > 0.8 and percentHeight > 0.04:
-   mrzBox = (x, y, w, h)
-   break
- if mrzBox is None:
-  print("[INFO] MRZ could not be found")
- (x, y, w, h) = mrzBox
- mrz = image[y:y + h, x:x + w]
- pytesseract.pytesseract.tesseract_cmd = '/app/.apt/usr/bin/tesseract'
- res = pytesseract.image_to_string(mrz, lang='eng')
+    # process your img_arr here    
+    text = ocr.ID_read_img(frame)
+    # access other keys of json
+    # print(request.json['other_key'])
+    #print(text)
 
- return res
+    result_dict = {'Body output': text}
+    return jsonify(result_dict)
 
-app = FastAPI()
+@app.route("/passport_predict", methods=['POST'])
+@cross_origin()
+def passport_prediction():         
+    # print(request.json)      
+    if not request.json or 'image' not in request.json: 
+        abort(400)
+             
+    # get the base64 encoded string
+    im_b64 = request.json['image']
 
-class ImageType(BaseModel):
- url: str
+    # convert it into bytes  
+    img_bytes = base64.b64decode(im_b64.encode('utf-8'))
 
-@app.get('/')
-async def hello():
- return 'Hello world'
+    # convert bytes data to PIL Image object
+    img = Image.open(io.BytesIO(img_bytes))
 
-@app.post('/License_predict/')
-def License_prediction(request: Request,
- file: bytes = File(...)):
- if request.method == 'POST':
-  image_stream = io.BytesIO(file)
-  image_stream.seek(0)
-  file_bytes = np.asarray(bytearray(image_stream.read()), dtype=np.uint8)
-  frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-  name_address, text = License_read_img(frame)
-  return {"name_and_address":name_address, "text":text}
-  return 'No post request found'
+    # PIL image object to numpy array
+    frame = np.asarray(img)      
+    #print('img shape', frame.shape)
 
-@app.post('/ID_predict/')
-def ID_prediction(request: Request,
- file: bytes = File(...)):
- if request.method == 'POST':
-  image_stream = io.BytesIO(file)
-  image_stream.seek(0)
-  file_bytes = np.asarray(bytearray(image_stream.read()), dtype=np.uint8)
-  frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-  text = ID_read_img(frame)
-  return {"text":text}
-  return 'No post request found'
+    # process your img_arr here    
+    text = ocr.passport_read_img(frame)
+    # access other keys of json
+    # print(request.json['other_key'])
+    #print(text)
 
-@app.post('/passport_prediction/')
-def passport_prediction(request: Request,
- file: bytes = File(...)):
- if request.method == 'POST':
-  image_stream = io.BytesIO(file)
-  image_stream.seek(0)
-  file_bytes = np.asarray(bytearray(image_stream.read()), dtype=np.uint8)
-  frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-  text = passport_read_img(frame)
-  return {"text":text}
-  return 'No post request found'
+    result_dict = {'Body output': text}
+    return jsonify(result_dict)
 
+@app.route("/AOI_predict", methods=['POST'])
+@cross_origin()
+def AOI_prediction():         
+    # print(request.json)      
+    if not request.json or 'image' not in request.json: 
+        abort(400)
+             
+    # get the base64 encoded string
+    im_b64 = request.json['image']
 
-if __name__=='__main__':
- uvicorn.run(app)
+    # convert it into bytes  
+    img_bytes = base64.b64decode(im_b64.encode('utf-8'))
+
+    # convert bytes data to PIL Image object
+    img = Image.open(io.BytesIO(img_bytes))
+
+    # PIL image object to numpy array
+    frame = np.asarray(img)      
+    #print('img shape', frame.shape)
+
+    # process your img_arr here    
+    text = ocr.AOI_read_img(frame)
+    # access other keys of json
+    # print(request.json['other_key'])
+    #print(text)
+
+    result_dict = {'Body output': text}
+    return jsonify(result_dict)
+
+  
+#def run_server_api():
+    
+  
+  
+if __name__ == "__main__":     
+    app.run(host='0.0.0.0', port=5000)
